@@ -532,6 +532,22 @@ class Storage:
             ).fetchall()
         return [str(row["sha256"]) for row in rows]
 
+    def list_document_chunks(self, *, snapshot_id: int) -> list[dict[str, Any]]:
+        """Return inspectable text chunks for bounded local source selection."""
+        with self.connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT d.id AS document_id, d.canonical_path, d.rel_path, d.sha256,
+                       c.chunk_index, c.heading_path, c.text
+                FROM document_chunks c
+                JOIN documents d ON d.id = c.document_id
+                WHERE d.snapshot_id = ?
+                ORDER BY d.canonical_path, c.chunk_index
+                """,
+                (snapshot_id,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
     def insert_profile(
         self,
         name: str,
