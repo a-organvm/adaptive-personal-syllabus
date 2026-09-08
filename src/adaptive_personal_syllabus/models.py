@@ -7,6 +7,7 @@ from typing import Any
 
 
 class DifficultyLevel(Enum):
+    UNASSESSED = "unassessed"
     BEGINNER = "beginner"
     INTERMEDIATE = "intermediate"
     ADVANCED = "advanced"

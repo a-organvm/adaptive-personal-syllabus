@@ -1,4 +1,5 @@
 """Profile-aware planning that merges learner context with corpus evidence."""
+
 from __future__ import annotations
 
 import hashlib
@@ -8,17 +9,30 @@ import re
 from pathlib import Path
 from typing import Any
 
+from .encounter import adapt_encounter
 from .generator import SyllabusGenerator
 from .ledger import Ledger
 from .models import DifficultyLevel, LearnerProfile, PersonalizationRule
 from .storage import Storage
 
 WINGS: list[dict[str, str]] = [
-    {"wing_id": "academic", "name": "Academic", "description": "Research summary or formal analysis."},
+    {
+        "wing_id": "academic",
+        "name": "Academic",
+        "description": "Research summary or formal analysis.",
+    },
     {"wing_id": "sop", "name": "SOP", "description": "Operational runbook or procedure."},
-    {"wing_id": "business", "name": "Business", "description": "Business framing and value proposition."},
+    {
+        "wing_id": "business",
+        "name": "Business",
+        "description": "Business framing and value proposition.",
+    },
     {"wing_id": "social", "name": "Social", "description": "Public-facing social content."},
-    {"wing_id": "community", "name": "Community", "description": "Community prompt and collaboration seed."},
+    {
+        "wing_id": "community",
+        "name": "Community",
+        "description": "Community prompt and collaboration seed.",
+    },
     {"wing_id": "wiki", "name": "Wiki", "description": "Reference documentation artifact."},
     {"wing_id": "web_blog", "name": "Web/Blog", "description": "Long-form narrative publication."},
     {"wing_id": "grants", "name": "Grants", "description": "Grant-aligned research framing."},
@@ -49,14 +63,14 @@ def _tokens(*values: Any) -> set[str]:
 
 DEFAULT_PERSONALIZATION_RULES: list[PersonalizationRule] = [
     PersonalizationRule(
-        rule_id="contextual_rewrite",
-        description="Rewrite generic recommendations using learner goals and context.",
-        profile_fields=["goals", "context"],
+        rule_id="purpose_and_access",
+        description="Choose explicit encounter instructions without rewriting source arguments.",
+        profile_fields=["learning_purpose", "medium", "access_conditions"],
     ),
     PersonalizationRule(
-        rule_id="difficulty_alignment",
-        description="Align module framing with learner difficulty level and completed modules.",
-        profile_fields=["level", "completed_modules"],
+        rule_id="task_evidence_route",
+        description="Choose a task route from matching prior observations, retaining uncertainty.",
+        profile_fields=["prior_task_evidence"],
     ),
 ]
 
@@ -72,6 +86,8 @@ class Planner:
     @staticmethod
     def _load_profile(profile_path: Path) -> dict[str, Any]:
         data = json.loads(profile_path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            raise ValueError("Profile must be an object")  # noqa: TRY004
         if "name" not in data:
             raise ValueError("Profile must include 'name'")
         return data
@@ -93,7 +109,7 @@ class Planner:
         return hashlib.sha256(blob.encode("utf-8")).hexdigest()
 
     @staticmethod
-    def _deterministic_plan_uid(
+    def _full_fingerprint(
         profile_data: dict[str, Any],
         modules: list[dict[str, Any]],
         *,
@@ -111,55 +127,46 @@ class Planner:
         }
         _validate_finite_json(payload)
         blob = json.dumps(payload, sort_keys=True, allow_nan=False, separators=(",", ":"))
-        return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:12]
+        return hashlib.sha256(blob.encode("utf-8")).hexdigest()
 
+    @staticmethod
+    def _deterministic_plan_uid(*args: Any, **kwargs: Any) -> str:
+        return Planner._full_fingerprint(*args, **kwargs)[:12]
+
+    @staticmethod
     def _select_source_candidates(
-        self, *, snapshot_id: int, module: dict[str, Any]
+        *, chunks: list[tuple[dict[str, Any], set[str]]], module: dict[str, Any]
     ) -> list[dict[str, Any]]:
-        """Find local passages worth inspection without claiming they support a claim."""
-        query = _tokens(module["title"], module["organ"], *module["readings"], *module["questions"])
-        candidates: list[tuple[int, dict[str, Any]]] = []
-        for chunk in self.storage.list_document_chunks(snapshot_id=snapshot_id):
-            overlap = query & _tokens(chunk["heading_path"], chunk["text"])
-            if overlap:
-                candidates.append((len(overlap), chunk))
-        candidates.sort(key=lambda item: (-item[0], item[1]["canonical_path"], item[1]["chunk_index"]))
+        """Rank module-specific text; retrieval never establishes claim support."""
+        query = _tokens(module["title"])
+        candidates = [(len(query & tokens), chunk) for chunk, tokens in chunks if query & tokens]
+        candidates.sort(
+            key=lambda item: (-item[0], item[1]["canonical_path"], item[1]["chunk_index"])
+        )
         return [
             {
+                "snapshot_id": int(chunk["snapshot_id"]),
                 "document_id": int(chunk["document_id"]),
                 "canonical_path": str(chunk["canonical_path"]),
                 "rel_path": str(chunk["rel_path"]),
                 "sha256": str(chunk["sha256"]),
                 "locator": f"chunk:{int(chunk['chunk_index'])}",
                 "heading_path": str(chunk["heading_path"]),
-                "inspection_status": "text_inspected",
+                "passage_sha256": hashlib.sha256(chunk["text"].encode()).hexdigest(),
+                "inspection_status": "text_available_not_reviewed",
                 "selection_status": "lexical_relevance_candidate",
                 "source_support": "source_support_unverified",
+                "reviewer_status": "not_reviewed",
+                "judgment_method": None,
+                "document_completeness": "not_established",
             }
             for _, chunk in candidates[:3]
         ]
 
-    @staticmethod
-    def _adaptation(profile_data: dict[str, Any], module: dict[str, Any]) -> dict[str, Any]:
-        purpose = str(profile_data.get("learning_purpose", "understand"))
-        medium = str(profile_data.get("medium", "written_or_spoken"))
-        access = profile_data.get("access_conditions", {})
-        prior = profile_data.get("prior_task_evidence", [])
-        route = "worked_explanation" if prior else "first_encounter"
-        if module.get("prerequisites"):
-            route = "prerequisite_check"
-        return {
-            "schema_version": "1.0",
-            "purpose": purpose,
-            "medium": medium,
-            "route": route,
-            "access_adjustment": "phone_safe" if isinstance(access, dict) and access.get("phone_only") else "none",
-            "reason": "Chosen from purpose, prior task evidence, prerequisites, medium, and access conditions.",
-        }
-
     def generate(self, profile_path: Path) -> dict[str, Any]:
         profile_path = profile_path.expanduser().resolve()
         profile_data = self._load_profile(profile_path)
+        _validate_finite_json(profile_data)
         self.ledger.append(
             "profile.load",
             {
@@ -169,7 +176,7 @@ class Planner:
             },
         )
 
-        level = DifficultyLevel(profile_data.get("level", "beginner"))
+        level = DifficultyLevel(profile_data.get("level", "unassessed"))
         learner = LearnerProfile(
             name=str(profile_data["name"]),
             organs_of_interest=list(profile_data.get("organs_of_interest", [])),
@@ -187,9 +194,13 @@ class Planner:
 
         evidence_sha256 = self.storage.list_snapshot_sha256(snapshot_id=snapshot_id)
         output_policy = profile_data.get("output_policy", {})
-        selected_wings = output_policy.get("selected_wings", []) if isinstance(output_policy, dict) else []
+        if not isinstance(output_policy, dict):
+            raise ValueError("output_policy must be an object")  # noqa: TRY004 -- public validation API
+        selected_wings = output_policy.get("selected_wings", [])
         valid_wings = {wing["wing_id"] for wing in WINGS}
-        if not isinstance(selected_wings, list) or any(wing not in valid_wings for wing in selected_wings):
+        if not isinstance(selected_wings, list) or any(
+            not isinstance(wing, str) or wing not in valid_wings for wing in selected_wings
+        ):
             raise ValueError("output_policy.selected_wings must be a list of known wing IDs")
 
         module_rows: list[dict[str, Any]] = []
@@ -205,19 +216,29 @@ class Planner:
                     "readings": m.readings,
                     "questions": m.questions,
                     "prerequisites": m.prerequisites,
-                    "artifact_descriptors": [wing for wing in WINGS if wing["wing_id"] in selected_wings],
+                    "artifact_descriptors": [
+                        wing for wing in WINGS if wing["wing_id"] in selected_wings
+                    ],
                 }
             )
+        chunks = [
+            (chunk, _tokens(chunk["heading_path"], chunk["text"]))
+            for chunk in self.storage.list_document_chunks(snapshot_id=snapshot_id)
+        ]
         for row in module_rows:
-            row["adaptation"] = self._adaptation(profile_data, row)
+            row["adaptation"], row["encounter"] = adapt_encounter(profile_data, row)
             row["source_selection"] = {
                 "schema_version": SOURCE_SELECTION_SCHEMA_VERSION,
-                "candidates": self._select_source_candidates(snapshot_id=snapshot_id, module=row),
+                "candidates": self._select_source_candidates(chunks=chunks, module=row),
                 "claim_support_status": "source_support_unverified",
+                "judgments": [],
+                "missing_support": "No human-reviewed claim support is attached.",
             }
 
-        personalization_rules_hash = self._hash_personalization_rules(DEFAULT_PERSONALIZATION_RULES)
-        plan_uid = self._deterministic_plan_uid(
+        personalization_rules_hash = self._hash_personalization_rules(
+            DEFAULT_PERSONALIZATION_RULES
+        )
+        full_digest = self._full_fingerprint(
             profile_data,
             module_rows,
             snapshot_id=snapshot_id,
@@ -225,44 +246,19 @@ class Planner:
             personalization_rules_hash=personalization_rules_hash,
         )
 
-        profile_id = self.storage.insert_profile(
-            name=learner.name,
-            level=learner.level.value,
-            goals=list(profile_data.get("goals", [])),
-            context=dict(profile_data.get("context", {})),
-        )
-        db_plan_id = self.storage.insert_plan(
-            profile_id=profile_id,
-            title=f"Learning Plan {plan_uid}",
-            total_hours=path.total_hours,
-            module_count=len(module_rows),
-            snapshot_id=snapshot_id,
-        )
-
-        for row in module_rows:
-            self.storage.insert_plan_module(
-                plan_id=db_plan_id,
-                seq=int(row["seq"]),
-                module_id=str(row["module_id"]),
-                title=str(row["title"]),
-                organ=str(row["organ"]),
-                difficulty=str(row["difficulty"]),
-                readings=list(row["readings"]),
-                questions=list(row["questions"]),
-                estimated_hours=float(row["estimated_hours"]),
-            )
-
-        plan = {
+        plan_uid = full_digest[:12]
+        plan: dict[str, Any] = {
             "schema_version": "2.0",
             "plan_id": plan_uid,
-            "db_plan_id": db_plan_id,
+            "fingerprint_sha256": full_digest,
+            "db_plan_id": None,
             "title": f"Learning Path: {', '.join(learner.organs_of_interest)}",
             "profile": {
                 "name": learner.name,
                 "organs_of_interest": learner.organs_of_interest,
                 "level": learner.level.value,
                 "goals": list(profile_data.get("goals", [])),
-                "context": dict(profile_data.get("context", {})),
+                "context": {},
                 "completed_modules": learner.completed_modules,
             },
             "snapshot": snapshot,
@@ -293,12 +289,14 @@ class Planner:
             },
         }
 
+        db_plan_id = self.storage.insert_complete_plan(plan)
+        plan["db_plan_id"] = db_plan_id
+
         self.ledger.append(
             "plan.generate",
             {
                 "plan_id": plan_uid,
                 "db_plan_id": db_plan_id,
-                "profile_id": profile_id,
                 "snapshot_id": snapshot_id,
                 "module_count": len(module_rows),
                 "total_hours": path.total_hours,
