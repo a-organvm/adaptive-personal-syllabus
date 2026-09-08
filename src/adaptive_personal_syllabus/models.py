@@ -19,7 +19,7 @@ class LearnerProfile:
 
     name: str
     organs_of_interest: list[str] = field(default_factory=list)  # e.g., ["I", "II", "V"]
-    level: DifficultyLevel = DifficultyLevel.BEGINNER
+    level: DifficultyLevel = DifficultyLevel.UNASSESSED
     completed_modules: list[str] = field(default_factory=list)
 
     total_modules: int = 0  # set after path generation for accurate progress

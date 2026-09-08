@@ -309,6 +309,16 @@ def plan() -> None:
     """Plan generation commands."""
 
 
+def _render_assistant_example(encounter: dict[str, Any]) -> list[str]:
+    lines = ["Assistant explanation: " + encounter["self_contained_example"]]
+    if encounter.get("example_scope") == "independent_claim_inspection_not_topic_instruction":
+        lines.append(
+            "Scope: independent practice in inspecting a claim; "
+            "topic-specific instruction remains unverified."
+        )
+    return lines
+
+
 def _render_plan_text(plan_doc: dict[str, Any]) -> str:
     lines = [
         f"Plan: {plan_doc['title']} ({plan_doc['plan_id']})",
@@ -321,7 +331,7 @@ def _render_plan_text(plan_doc: dict[str, Any]) -> str:
         )
         if "encounter" in m:
             lines.extend(m["encounter"]["steps"])
-            lines.append("Assistant explanation: " + m["encounter"]["self_contained_example"])
+            lines.extend(_render_assistant_example(m["encounter"]))
             lines.append("Optional: written, spoken, explanation, or no response now.")
     return "\n".join(lines)
 
@@ -344,14 +354,14 @@ def _render_plan_markdown(plan_doc: dict[str, Any]) -> str:
         lines.append(f"*{m['organ']} | {m['difficulty']} | ~{m['estimated_hours']}h*")
         lines.append("")
         if m["readings"]:
-            lines.append("**Readings**")
+            lines.append("**Optional reading candidates**")
             for reading in m["readings"]:
                 lines.append(f"- {reading}")
             lines.append("")
         if "encounter" in m:
             lines.append("**Assistant instruction**")
             lines.extend("- " + step for step in m["encounter"]["steps"])
-            lines.append("Assistant explanation: " + m["encounter"]["self_contained_example"])
+            lines.extend(_render_assistant_example(m["encounter"]))
             lines.append("Optional: written, spoken, explanation, or no response now.")
     return "\n".join(lines)
 
@@ -376,7 +386,7 @@ def _render_plan_markdown(plan_doc: dict[str, Any]) -> str:
     default=None,
 )
 def plan_generate(profile_path: Path, fmt: str, db_path: Path, seed_dir: Path | None) -> None:
-    """Generate a profile-aware syllabus plan using ingested corpus evidence."""
+    """Generate an optional learning plan with unverified corpus candidates."""
     storage = Storage(db_path)
     chain = Ledger(storage)
     planner = Planner(storage=storage, ledger=chain, seed_dir=seed_dir)
@@ -416,6 +426,76 @@ def plan_show(plan_id: int, db_path: Path, fmt: str) -> None:
     )
 
 
+@plan.command("encounter")
+@click.argument("plan_id", type=int)
+@click.option("--module-id", default=None, help="Choose a module; defaults to the first.")
+@click.option(
+    "--route",
+    type=click.Choice(
+        [
+            "encounter",
+            "short_written",
+            "spoken_under_two_minutes",
+            "worked_explanation",
+            "no_response_now",
+        ]
+    ),
+    default="encounter",
+    show_default=True,
+)
+@click.option("--format", "fmt", type=click.Choice(["text", "json"]), default="text")
+@click.option("--db-path", type=click.Path(path_type=Path), default=str(DEFAULT_DB_PATH))
+def plan_encounter(
+    plan_id: int, module_id: str | None, route: str, fmt: str, db_path: Path
+) -> None:
+    """View one optional encounter or explanation without recording learner performance."""
+    doc = Storage(db_path).get_plan(plan_id)
+    if doc is None:
+        raise click.ClickException("Plan not found")
+    modules = doc["modules"]
+    module = next((m for m in modules if module_id is None or m["module_id"] == module_id), None)
+    if module is None:
+        raise click.ClickException("No matching module in this plan")
+    encounter = module.get("encounter")
+    if encounter is None:
+        raise click.ClickException("This historical plan has no stored encounter")
+
+    payload = {
+        "db_plan_id": plan_id,
+        "module_id": module["module_id"],
+        "title": module["title"],
+        "view_route": route,
+        "status": encounter["status"],
+        "assessment_status": module["adaptation"]["assessment_status"],
+        "performance_recorded": False,
+        "publication_status": "not_published",
+        "encounter": encounter,
+    }
+    if fmt == "json":
+        click.echo(json.dumps(payload, indent=2))
+        return
+
+    lines = [
+        module["title"],
+        "Prepared material; no learner response or result is recorded.",
+    ]
+    if route == "no_response_now":
+        lines.append("No response is required. You can return to this encounter later.")
+    elif route == "worked_explanation":
+        lines.extend(_render_assistant_example(encounter))
+        lines.append("An explanation is available without assessment.")
+    else:
+        lines.append("Assistant instruction:")
+        lines.extend(encounter["steps"])
+        lines.extend(_render_assistant_example(encounter))
+        if route == "short_written":
+            lines.append("Optional: write a short response in your own words.")
+        elif route == "spoken_under_two_minutes":
+            lines.append("Optional: speak in your own words for under two minutes.")
+    lines.append(encounter["completion"])
+    click.echo("\n".join(lines))
+
+
 @plan.command("artifact")
 @click.argument("plan_id", type=int)
 @click.option("--wing", required=True, type=click.Choice([w["wing_id"] for w in WINGS]))
@@ -440,6 +520,7 @@ def plan_artifact(plan_id: int, wing: str, output: Path, db_path: Path) -> None:
                 "",
                 "## " + module["title"],
                 *module["encounter"]["steps"],
+                *_render_assistant_example(module["encounter"]),
                 "Learner words: [not supplied]",
                 "Source support: unverified",
             ]
@@ -450,6 +531,11 @@ def plan_artifact(plan_id: int, wing: str, output: Path, db_path: Path) -> None:
             stream.write(data)
     except FileExistsError as exc:
         raise click.ClickException("Output already exists; choose a new version") from exc
+    except OSError as exc:
+        raise click.ClickException(
+            f"Cannot write artifact to {output}: {exc.strerror}. "
+            "Choose a writable file path in an existing directory."
+        ) from exc
     receipt = {
         "plan_id": plan_id,
         "wing": wing,
@@ -475,8 +561,14 @@ def authorize_publication(
     """Record separate authorization for exact bytes and destination; performs no publication."""
     import hashlib
 
+    if not destination.strip():
+        raise click.ClickException("--destination must name the intended destination")
+    try:
+        data = artifact.read_bytes()
+    except OSError as exc:
+        raise click.ClickException(f"Cannot read artifact: {exc.strerror}") from exc
     receipt = {
-        "artifact_sha256": hashlib.sha256(artifact.read_bytes()).hexdigest(),
+        "artifact_sha256": hashlib.sha256(data).hexdigest(),
         "destination": destination,
         "publication_authorized": authorize,
         "publication_status": "not_published",
@@ -512,22 +604,35 @@ def corpus_judge(record_path: Path, human_reviewed: bool, db_path: Path) -> None
         if record.get("reviewer_status") == "human_reviewed" and not human_reviewed:
             raise ValueError("Human review requires explicit --human-reviewed attestation")
         identifier = Storage(db_path).record_source_judgment(record)
-    except (ValueError, KeyError) as exc:
+    except (ValueError, KeyError, TypeError) as exc:
         raise click.ClickException(str(exc)) from exc
     click.echo(json.dumps({"judgment_id": identifier, "record": record}))
 
 
 @corpus.command("support")
-@click.argument("document_id", type=int)
+@click.argument("document_id", type=click.IntRange(min=1), required=False)
+@click.option(
+    "--snapshot-id",
+    type=click.IntRange(min=1),
+    default=None,
+    help="Inspect judgments across a snapshot.",
+)
 @click.option("--claim", required=True)
 @click.option("--db-path", type=click.Path(path_type=Path), default=str(DEFAULT_DB_PATH))
-def corpus_support(document_id: int, claim: str, db_path: Path) -> None:
+def corpus_support(
+    document_id: int | None, snapshot_id: int | None, claim: str, db_path: Path
+) -> None:
     """Inspect all judgments for an exact claim, retaining contradictions."""
     from .support import summarize_judgments
 
+    if (document_id is None) == (snapshot_id is None):
+        raise click.ClickException("Choose one document ID or --snapshot-id")
     click.echo(
         json.dumps(
-            summarize_judgments(Storage(db_path).list_source_judgments(document_id), claim),
+            summarize_judgments(
+                Storage(db_path).list_source_judgments(document_id, snapshot_id=snapshot_id),
+                claim,
+            ),
             indent=2,
         )
     )

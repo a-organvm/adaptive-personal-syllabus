@@ -821,12 +821,23 @@ class Storage:
             )
             return self._cursor_lastrowid(cur)
 
-    def list_source_judgments(self, document_id: int) -> list[dict[str, Any]]:
+    def list_source_judgments(
+        self, document_id: int | None = None, *, snapshot_id: int | None = None
+    ) -> list[dict[str, Any]]:
+        """Read document or snapshot judgments, preserving cross-source contradictions."""
+        if (document_id is None) == (snapshot_id is None):
+            raise ValueError("Select exactly one document_id or snapshot_id")
+        selector = document_id if document_id is not None else snapshot_id
+        if type(selector) is not int or selector <= 0:
+            raise ValueError("Source judgment selector must be a positive integer")
+        column = "j.document_id" if document_id is not None else "d.snapshot_id"
         with self.connection() as conn:
             return [
                 json.loads(r[0])
                 for r in conn.execute(
-                    "SELECT payload_json FROM source_judgments WHERE document_id=? ORDER BY id",
-                    (document_id,),
+                    "SELECT j.payload_json FROM source_judgments j "
+                    "JOIN documents d ON d.id=j.document_id "
+                    f"WHERE {column}=? ORDER BY j.id",
+                    (selector,),
                 )
             ]

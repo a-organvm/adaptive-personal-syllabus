@@ -29,18 +29,36 @@ def setup(tmp_path):
 
 def test_exact_roundtrip_and_consumer(setup, tmp_path):
     storage, planner = setup
-    plan = planner.generate(_profile(tmp_path, context={"private_marker": "DO_NOT_COPY"}))
+    runner = CliRunner()
+    generated = runner.invoke(
+        cli,
+        [
+            "plan", "generate", "--format", "json",
+            "--profile", str(_profile(tmp_path, context={"private_marker": "DO_NOT_COPY"})),
+            "--seed-dir", str(planner.seed_dir),
+            "--db-path", str(storage.db_path),
+        ],
+    )
+    assert generated.exit_code == 0, generated.output
+    plan = json.loads(generated.output)
     reopened = Storage(storage.db_path).get_plan(plan["db_plan_id"])
     assert reopened == plan
     assert len(plan["fingerprint_sha256"]) == 64
     assert plan["fingerprint_sha256"].startswith(plan["plan_id"])
     assert "DO_NOT_COPY" not in json.dumps(plan)
-    result = CliRunner().invoke(
+    result = runner.invoke(
         cli, ["plan", "show", str(plan["db_plan_id"]), "--db-path", str(storage.db_path)]
     )
     assert result.exit_code == 0, result.output
     assert json.loads(result.output) == plan
     assert "Assistant instruction" in _render_plan_markdown(reopened)
+    rendered = runner.invoke(
+        cli,
+        ["plan", "show", str(plan["db_plan_id"]), "--format", "md",
+         "--db-path", str(storage.db_path)],
+    )
+    assert rendered.exit_code == 0, rendered.output
+    assert rendered.output.rstrip("\n") == _render_plan_markdown(reopened)
 
 
 def test_legacy_rows_remain_and_rollback_projection(setup, tmp_path):

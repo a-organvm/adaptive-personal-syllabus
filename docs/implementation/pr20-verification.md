@@ -37,3 +37,29 @@ Merge remains gated on administrator restoration of hosted execution and a succe
 ## Privacy and limits
 
 Only reusable code, synthetic tests and generic documentation are included. No populated profile, learner response, library export, private PDF or private database was added. Historical full v1 payloads were never stored; retrieval exposes their original database projection without inventing missing fields. Source judgments rely on declared reviewer attribution, not authenticated identity or automated entailment. Wings artifacts are working sheets, not finished professional publications.
+
+## Continuation at the next reviewed content revision
+
+The continuation inspected `eda71292d5428c9df36b3d472f968258bd3d3930` rather than rebuilding the predecessor repair. All five newly open inline threads have a code/test disposition:
+
+| Thread | Finding | Repair and test |
+|---|---|---|
+| PRRT_kwDORPHIHc6gYq9k | Unassessed DB generator selected advanced-only readings | Preserve all difficulty options while retaining unassessed status; align API default and test both |
+| PRRT_kwDORPHIHc6gYq9n / PRRT_kwDORPHIHc6gYwJt | Missing artifact parent caused traceback | Actionable filesystem error; no success receipt or output overwrite |
+| PRRT_kwDORPHIHc6gYq9v | Prerequisites erased conflicting task observations | Preserve evidence-review route and prerequisite instructions together |
+| PRRT_kwDORPHIHc6gYq9y | Unavailable source still requested on screen | Inline activity and appropriate page/mixed/audio instructions; independent example scope explicit |
+
+Additional negative cases repaired decoded-text loss behind a binary alias, hidden cross-document contradictions and uncertainty, invalid review dates, unsupported document-completeness declarations, and invalid numeric source selectors. A separate read-only encounter command exposes explanation and no-response views without recording performance. Optional artifact sheets remain assistant-authored.
+
+Executed on Python 3.12.13, Linux x86_64, with `koinonia-db` at `276b0c1ab4fa1e46c11938d60c638ba380cbff68`:
+
+- `PYTHONPATH=src python -m pytest -q`: 130 passed.
+- `PYTHONPATH=src python -m ruff check .`: passed.
+- `PYTHONPATH=src python -m mypy src --ignore-missing-imports`: passed, 16 files.
+- `git diff --check`: passed.
+
+The initial integration run executed 127 passing and three failing new numeric-selector regressions; the boundary was repaired and all 130 passed. These are actual local failures and repairs, separate from hosted infrastructure. Independent inspection verified their closure.
+
+A separate synthetic rollback proof loaded the actual historical Storage implementation from base `9bd17d5`, opened the same SQLite database with current code, generated/retrieved/rendered v2 through the CLI, reopened with historical code, wrote a historical projection, and restored current code. All three records and the exact v2 payload survived; nine CLI reads across JSON/text/Markdown passed. No personal database was used.
+
+Fresh hosted inspection of `eda71292` found five jobs with `steps: []`, `runner_id: 0`, and empty runner names. Four failed before starting with the annotation: "The job was not started because your account is locked due to a billing issue." Python 3.11 was cancelled by matrix fail-fast. No job executed; CodeQL's workflow-level success does not turn its failed zero-step job into a pass. The billing owner must restore execution eligibility before current-head hosted checks can satisfy the merge gate. No protection or review bypass is authorized by local results.
